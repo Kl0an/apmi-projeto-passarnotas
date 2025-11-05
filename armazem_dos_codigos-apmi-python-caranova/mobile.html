@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Leitor de NF-e Mobile</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        #reader { border-radius: 12px; overflow: hidden; background: #111827; position: relative; }
+        #reader video { transform: scale(1.01); }
+        .status-card { transition: all 0.3s ease-in-out; transform: translateY(20px); opacity: 0; visibility: hidden; }
+        .status-card.show { transform: translateY(0); opacity: 1; visibility: visible; }
+        .control-button {
+            background-color: rgba(0, 0, 0, 0.5); backdrop-filter: blur(8px);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            color: white; border-radius: 9999px; width: 60px; height: 60px;
+            display: flex; align-items: center; justify-content: center;
+            cursor: pointer; transition: all 0.2s; box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+        .control-button:hover:not(:disabled) { background-color: rgba(0, 0, 0, 0.8); transform: scale(1.1); }
+        .control-button.active { background-color: #4f46e5; border-color: #6d28d9; }
+        .control-button:disabled { cursor: not-allowed; background-color: rgba(50, 50, 50, 0.5); opacity: 0.5; }
+        .control-button svg { width: 28px; height: 28px; }
+    </style>
+</head>
+<body class="bg-gray-900 text-white min-h-screen">
+    <header class="bg-gray-800 shadow-md">
+        <div class="container mx-auto max-w-2xl p-4 flex justify-between items-center">
+            <a href="/" class="text-indigo-400 hover:text-indigo-300 font-bold">&larr; Voltar ao Menu</a>
+            <div class="text-right">
+                <div id="user-name" class="font-bold text-gray-200">Carregando...</div>
+                <div id="timer" class="text-sm text-gray-400 font-mono">00:00:00</div>
+            </div>
+        </div>
+    </header>
+    
+    <div class="container mx-auto p-4 max-w-2xl">
+        <main>
+            <div class="w-full aspect-square max-w-md mx-auto relative">
+                <div id="reader"></div>
+                <div id="controls" class="absolute top-4 right-4 space-y-3" style="display: none;">
+                    <button id="torch-button" class="control-button" title="Ligar/Desligar Lanterna">
+                        <svg id="torch-icon-off" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"></path></svg>
+                        <svg id="torch-icon-on" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:none;"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"></path></svg>
+                    </button>
+                    <button id="flip-camera-button" class="control-button" title="Virar Câmera">
+                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.51 9a9 9 0 0114.85-3.36L20.49 2M3.51 22a9 9 0 0114.85-3.36L20.49 12"/></svg>
+                    </button>
+                </div>
+            </div>
+            <div id="start-stop-container" class="text-center mt-4">
+                <button id="startButton" class="bg-indigo-600 text-white font-semibold py-3 px-8 rounded-lg shadow-md hover:bg-indigo-700 w-64 text-center">
+                    Iniciar Câmera
+                </button>
+            </div>
+            <div id="statusCard" class="status-card fixed bottom-4 right-4 bg-white text-gray-800 p-4 rounded-lg shadow-lg max-w-xs w-full flex items-center space-x-3 z-40"></div>
+            <div class="mt-8 bg-gray-800 p-6 rounded-2xl shadow-lg">
+                <div class="flex justify-between items-center mb-4">
+                    <h2 class="text-2xl font-bold text-gray-300">NF-e Lidas</h2>
+                    <span id="count" class="text-xl font-bold bg-indigo-500 text-white px-4 py-1 rounded-full">0</span>
+                </div>
+                <div class="h-48 overflow-y-auto pr-2"><ul id="code-list" class="space-y-2"><li class="text-center text-gray-400 pt-8">Nenhuma NF-e lida.</li></ul></div>
+            </div>
+        </main>
+    </div>
+    
+    <script src="/assets/html5-qrcode.min.js"></script>
+    <script>
+        // --- ELEMENTOS E ESTADO GLOBAL ---
+        const elements = { startButton: document.getElementById("startButton"), codeList: document.getElementById("code-list"), count: document.getElementById("count"), statusCard: document.getElementById("statusCard"), userName: document.getElementById("user-name"), timer: document.getElementById("timer"), torchButton: document.getElementById("torch-button"), flipCameraButton: document.getElementById("flip-camera-button"), controls: document.getElementById("controls"), torchIconOn: document.getElementById("torch-icon-on"), torchIconOff: document.getElementById("torch-icon-off")};
+        const beepSound = new Audio('/assets/beep.mp3');
+        let html5Qrcode, isScanning = false, isTorchOn = false, cameras = [], currentCameraIndex = 0;
+        const BASE_URL = `https://${window.location.host}`;
+
+        // --- FUNÇÕES PRINCIPAIS DA CÂMERA ---
+        async function checkTorchSupport() {
+            if (isScanning && html5Qrcode.getState() === 2) { // 2 = SCANNING
+                try {
+                    const capabilities = html5Qrcode.getRunningTrackCapabilities();
+                    if (capabilities.torch) {
+                        elements.torchButton.disabled = false;
+                        elements.torchButton.title = "Ligar/Desligar Lanterna";
+                    } else {
+                        elements.torchButton.disabled = true;
+                        elements.torchButton.title = "Lanterna não suportada nesta câmera";
+                    }
+                } catch (e) {
+                    elements.torchButton.disabled = true;
+                    elements.torchButton.title = "Lanterna não disponível";
+                }
+            } else {
+                elements.torchButton.disabled = true;
+            }
+        }
+
+        async function startScanner(cameraId) {
+            elements.startButton.disabled = true;
+            elements.startButton.textContent = "Acessando...";
+            try {
+                html5Qrcode = new Html5Qrcode("reader");
+                await html5Qrcode.start(cameraId, { fps: 10, qrbox: { width: 250, height: 250 } }, onScanSuccess, ()=>{});
+                isScanning = true;
+                elements.startButton.textContent = "Parar Câmera";
+                elements.startButton.classList.replace("bg-indigo-600", "bg-red-600");
+                elements.controls.style.display = 'block';
+                await checkTorchSupport();
+            } catch (err) {
+                alert(`Erro ao iniciar a câmera: ${err.message}`);
+                elements.startButton.textContent = "Tentar Novamente";
+            } finally {
+                elements.startButton.disabled = false;
+            }
+        }
+
+        async function stopScanner() {
+            if (!isScanning) return;
+            try {
+                // Desliga a lanterna ANTES de parar a câmera para evitar bugs
+                if(isTorchOn && !elements.torchButton.disabled) {
+                    await html5Qrcode.applyVideoConstraints({ advanced: [{ torch: false }] });
+                }
+            } catch (e) { console.error("Não foi possível desligar a lanterna antes de parar."); }
+            
+            try {
+                await html5Qrcode.stop();
+            } catch (err) { console.error("Erro ao parar câmera:", err); }
+            finally {
+                 isScanning = false;
+                isTorchOn = false;
+                elements.torchButton.classList.remove('active');
+                elements.torchIconOn.style.display = 'none';
+                elements.torchIconOff.style.display = 'block';
+                elements.startButton.textContent = "Iniciar Câmera";
+                elements.startButton.classList.replace("bg-red-600", "bg-indigo-600");
+                elements.controls.style.display = 'none';
+            }
+        }
+        
+        // --- LÓGICA DOS BOTÕES ---
+        elements.startButton.addEventListener("click", async () => {
+            if (isScanning) {
+                await stopScanner();
+            } else {
+                if (cameras.length === 0) {
+                    try {
+                        cameras = await Html5Qrcode.getCameras();
+                        if (!cameras || !cameras.length) throw new Error("Nenhuma câmera encontrada.");
+                        const rearCameraIndex = cameras.findIndex(c => c.label.toLowerCase().includes('back') || c.label.toLowerCase().includes('trás'));
+                        currentCameraIndex = rearCameraIndex !== -1 ? rearCameraIndex : 0;
+                    } catch (e) { alert(`Não foi possível listar as câmeras: ${e.message}`); return; }
+                }
+                await startScanner(cameras[currentCameraIndex].id);
+            }
+        });
+        
+        elements.torchButton.addEventListener('click', async () => {
+            if (isScanning && !elements.torchButton.disabled) {
+                try {
+                    isTorchOn = !isTorchOn;
+                    await html5Qrcode.applyVideoConstraints({ advanced: [{ torch: isTorchOn }] });
+                    elements.torchButton.classList.toggle('active', isTorchOn);
+                    elements.torchIconOn.style.display = isTorchOn ? 'block' : 'none';
+                    elements.torchIconOff.style.display = isTorchOn ? 'none' : 'block';
+                } catch (e) {
+                    isTorchOn = false;
+                    console.error("Erro ao controlar a lanterna", e);
+                    alert("Não foi possível acionar a lanterna.");
+                    await checkTorchSupport();
+                }
+            }
+        });
+
+        elements.flipCameraButton.addEventListener('click', async () => {
+            if (!isScanning || cameras.length < 2) {
+                elements.flipCameraButton.disabled = true;
+                return;
+            }
+            await stopScanner();
+            currentCameraIndex = (currentCameraIndex + 1) % cameras.length;
+            await startScanner(cameras[currentCameraIndex].id);
+        });
+        
+        // --- FUNÇÕES DE ATUALIZAÇÃO E FEEDBACK ---
+        async function onScanSuccess(decodedText, decodedResult) { 
+            try { 
+                const response = await fetch(`${BASE_URL}/scan`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ qr_code: decodedText }) }); 
+                const result = await response.json(); 
+                showStatus(result.status, result.message, result.code); 
+                if (result.status === 'success') { 
+                    beepSound.play().catch(e => console.error("Erro ao tocar som", e));
+                    updateDataFromServer(); 
+                } 
+            } catch (error) { 
+                showStatus('error', 'Erro de conexão.'); 
+            } 
+        }
+
+        function showStatus(type, message, code = "") { 
+            let statusTimeout; 
+            clearTimeout(statusTimeout); 
+            elements.statusCard.className = "status-card fixed bottom-4 right-4 bg-white text-gray-800 p-4 rounded-lg shadow-lg max-w-xs w-full flex items-center space-x-3 z-40 show"; 
+            const iconMap = { success: '<svg class="text-green-500" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>', duplicate: '<svg class="text-yellow-500" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>', error: '<svg class="text-red-500" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>' }; 
+            elements.statusCard.innerHTML = `<div>${iconMap[type]}</div><div><p class="font-semibold">${message}</p><p class="text-sm text-gray-600">${code || ''}</p></div>`; 
+            statusTimeout = setTimeout(() => elements.statusCard.classList.remove("show"), 3000); 
+        }
+
+        async function updateDataFromServer() { 
+            try { 
+                const response = await fetch(`${BASE_URL}/data`); 
+                const data = await response.json(); 
+                elements.count.textContent = data.count; 
+                elements.codeList.innerHTML = data.codes.length === 0 ? '<li class="text-center text-gray-400 pt-8">Nenhuma NF-e lida.</li>' : data.codes.map(code => `<li class="bg-gray-700 p-3 rounded-md text-gray-200 font-mono text-center">${code}</li>`).join(''); 
+            } catch (error) { 
+                console.error("Erro ao buscar dados:", error); 
+            } 
+        }
+
+        async function updateSessionInfo() { 
+            try { 
+                const response = await fetch(`${BASE_URL}/dados-sessao`); 
+                if (response.status === 404) return window.location.href = "/"; 
+                const data = await response.json(); 
+                elements.userName.textContent = data.nome_usuario; 
+                elements.timer.textContent = data.tempo_formatado; 
+            } catch (error) { 
+                elements.userName.textContent = "Erro de Conexão"; 
+            } 
+        }
+
+        // --- INICIALIZAÇÃO ---
+        updateDataFromServer(); 
+        updateSessionInfo(); 
+        setInterval(updateDataFromServer, 5000); 
+        setInterval(updateSessionInfo, 1000); // <-- CORREÇÃO DO TIMER
+    </script>
+</body>
+</html>
